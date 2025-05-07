@@ -1,6 +1,6 @@
 [project]
 name = "rpyc-ws"
-version = "0.1.1"
+version = "0.1.2"
 description = "RPyC over WebSocket"
 readme = "README.md"
 authors = [{ name = "Luke Cummings", email = "luke.cummings@cenovus.com" }]
