@@ -28,6 +28,6 @@ jobs:
       - name: format
         run: uv run ruff format --check src
       - name: build
-        run: uv run build
+        run: uv build
       - name: publish
-        run: uv run publish
+        run: uv publish
