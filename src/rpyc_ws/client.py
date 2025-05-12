@@ -1,6 +1,7 @@
 from functools import wraps
 
 from rpyc.utils.classic import connect_stream
+from websockets import ConnectionClosed
 from websockets.sync.client import connect
 
 from rpyc_ws.stream import CallbackStream
@@ -16,9 +17,14 @@ def connect_ws(*args, **kwargs):
             return result
         except TimeoutError:
             return None
+        except ConnectionClosed as exc:
+            raise EOFError("WS closed") from exc
 
     def send_bytes(data: bytes):
-        websocket.send(data)
+        try:
+            websocket.send(data)
+        except ConnectionClosed as exc:
+            raise EOFError("WS closed") from exc
 
     def close():
         websocket.close()

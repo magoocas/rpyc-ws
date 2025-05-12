@@ -39,12 +39,7 @@ class CallbackStream(Stream):
             del self._buf[: len(take)]
 
         while len(out) < count:
-            try:
-                msg = self.ws_recv(0.01)
-            except Exception as exc:
-                self.close()
-                raise EOFError("connection closed while reading") from exc
-
+            msg = self.ws_recv(None)
             if not msg:
                 continue
 
