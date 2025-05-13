@@ -38,11 +38,11 @@ class CallbackStream(Stream):
     def close(self) -> None:
         if self._closed:
             return
+        self._closed = True
         try:
             self._close()
         finally:
             self._buf.clear()
-            self._closed = True
             # break reference cycles
             self._recv = self._send = self._close = lambda *a, **k: None
 
