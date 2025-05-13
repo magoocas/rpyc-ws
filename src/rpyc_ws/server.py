@@ -1,6 +1,7 @@
 import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.websockets import WebSocketState
 from rpyc.utils.classic import connect_stream
 
 from rpyc_ws.stream import CallbackStream
@@ -19,9 +20,10 @@ def create_rpyc_fastapi_app(path: str = "/rpyc-ws/"):
         # ---------------------------------------------------------------- #
         def ws_close() -> None:
             try:
-                asyncio.run_coroutine_threadsafe(websocket.close(), loop).result()
-            finally:
-                stream.close()  # flip .closed flag
+                if websocket.application_state == WebSocketState.CONNECTED:
+                    asyncio.run_coroutine_threadsafe(websocket.close(), loop).result()
+            except (RuntimeError, WebSocketDisconnect):
+                pass
 
         def ws_receive_bytes(timeout: float | None) -> bytes:
             fut = asyncio.run_coroutine_threadsafe(websocket.receive_bytes(), loop)
