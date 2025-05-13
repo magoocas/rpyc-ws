@@ -11,12 +11,11 @@ from rpyc_ws.stream import CallbackStream
 def connect_ws(*args, **kwargs):
     websocket = connect(*args, **kwargs)
 
-    def receive_bytes(timeout: float):
+    def receive_bytes(timeout: float | None) -> bytes:
         try:
-            result = websocket.recv(timeout, False)
-            return result
+            return websocket.recv(timeout) or b""  # returns bytes, None impossible
         except TimeoutError:
-            return None
+            return b""
         except ConnectionClosed as exc:
             raise EOFError("WS closed") from exc
 
@@ -28,6 +27,7 @@ def connect_ws(*args, **kwargs):
 
     def close():
         websocket.close()
+        stream.close()
 
     stream = CallbackStream(receive_bytes, send_bytes, close)
     return connect_stream(stream)

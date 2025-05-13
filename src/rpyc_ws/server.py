@@ -14,19 +14,25 @@ def create_rpyc_fastapi_app(path: str = "/rpyc-ws/"):
         await websocket.accept()
         loop = asyncio.get_running_loop()
 
-        def ws_close():
-            asyncio.run_coroutine_threadsafe(websocket.close(), loop).result()
-
-        def ws_receive_bytes(timeout: float):
-            future = asyncio.run_coroutine_threadsafe(websocket.receive_bytes(), loop)
+        # ---------------------------------------------------------------- #
+        #  three thin, thread-safe wrappers
+        # ---------------------------------------------------------------- #
+        def ws_close() -> None:
             try:
-                return future.result(timeout)
+                asyncio.run_coroutine_threadsafe(websocket.close(), loop).result()
+            finally:
+                stream.close()  # flip .closed flag
+
+        def ws_receive_bytes(timeout: float | None) -> bytes:
+            fut = asyncio.run_coroutine_threadsafe(websocket.receive_bytes(), loop)
+            try:
+                return fut.result(timeout)  # may raise TimeoutError
             except TimeoutError:
-                return None
+                return b""  # *idle* poll – no data
             except WebSocketDisconnect as exc:
                 raise EOFError("WS closed") from exc
 
-        def ws_send_bytes(data: bytes):
+        def ws_send_bytes(data: bytes) -> None:
             try:
                 asyncio.run_coroutine_threadsafe(
                     websocket.send_bytes(data), loop
@@ -34,12 +40,12 @@ def create_rpyc_fastapi_app(path: str = "/rpyc-ws/"):
             except WebSocketDisconnect as exc:
                 raise EOFError("WS closed") from exc
 
-        stream = CallbackStream(
-            ws_receive_bytes,
-            ws_send_bytes,
-            ws_close,
-        )
+        stream = CallbackStream(ws_receive_bytes, ws_send_bytes, ws_close)
+
+        # create connection in worker thread
         conn = await loop.run_in_executor(None, connect_stream, stream)
+
+        # -> serve until CallbackStream.read() raises EOFError
         try:
             await loop.run_in_executor(None, conn.serve_all)
         finally:

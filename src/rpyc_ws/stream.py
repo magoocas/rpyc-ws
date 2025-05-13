@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Optional
 
 from rpyc.core.consts import STREAM_CHUNK
 from rpyc.core.stream import Stream
@@ -6,71 +6,122 @@ from rpyc.lib import Timeout
 
 
 class CallbackStream(Stream):
-    """RPyC stream that uses callbacks to read and write to the stream."""
+    """Duplex byte stream backed by three user-supplied callbacks.
 
-    __slots__ = ("ws_recv", "ws_send", "ws_close", "ws_closed", "_buf")
+    The callbacks MUST be thread-safe if you plan to access the
+    stream concurrently.
+    """
+
+    __slots__ = ("_recv", "_send", "_close", "_buf", "_closed")
     MAX_IO_CHUNK = STREAM_CHUNK
 
     def __init__(
         self,
-        ws_recv: Callable[[float], bytes],
-        ws_send: Callable[[bytes], None],
-        ws_close: Callable[[], None],
+        recv: Callable[[Optional[float]], bytes | None],
+        send: Callable[[bytes], None],
+        close: Callable[[], None],
     ):
-        self.ws_recv = ws_recv
-        self.ws_send = ws_send
-        self.ws_close = ws_close
+        self._recv = recv
+        self._send = send
+        self._close = close
         self._buf = bytearray()
+        self._closed: bool = False
 
-    def close(self):
-        self._buf.clear()
+    # --------------------------------------------------------------------- #
+    # bookkeeping
+    # --------------------------------------------------------------------- #
 
     @property
     def closed(self) -> bool:
-        return False
+        return self._closed
 
-    def read(self, count: int):
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self._close()
+        finally:
+            self._buf.clear()
+            self._closed = True
+            # break reference cycles
+            self._recv = self._send = self._close = lambda *a, **k: None
+
+    def fileno(self) -> int:  # not supported, but must exist
+        raise EOFError("CallbackStream has no OS file descriptor")
+
+    # --------------------------------------------------------------------- #
+    # I/O
+    # --------------------------------------------------------------------- #
+
+    def read(self, count: int) -> bytes:  # must return *exactly* count bytes
+        if self._closed:
+            raise EOFError("stream has been closed")
+
         out = bytearray()
 
-        # Drain buffered spill-over first
+        # 1) use spill-over first
         if self._buf:
             take = self._buf[:count]
-            out.extend(take)
+            out += take
             del self._buf[: len(take)]
 
+        # 2) keep fetching until satisfied
         while len(out) < count:
-            msg = self.ws_recv(None)
-            if not msg:
-                continue
+            msg = self._recv(None)  # block until something or EOF
+            if not msg:  # None or b''
+                self.close()
+                raise EOFError("connection closed by peer")
 
-            needed = count - len(out)
-            out.extend(msg[:needed])
-            if len(msg) > needed:
-                self._buf.extend(msg[needed:])
+            need = count - len(out)
+            out += msg[:need]
+
+            # spill-over if frame was larger
+            if len(msg) > need:
+                self._buf += msg[need:]
 
         return bytes(out)
 
-    def write(self, data: bytes | bytearray | memoryview):
+    def write(self, data: bytes | bytearray | memoryview) -> None:
+        if self._closed:
+            raise EOFError("stream has been closed")
+
         mv = memoryview(data)
         idx = 0
         try:
             while idx < len(mv):
                 chunk = mv[idx : idx + self.MAX_IO_CHUNK]
-                self.ws_send(chunk.tobytes())
+                self._send(chunk.tobytes())
                 idx += len(chunk)
         except Exception as exc:
             self.close()
             raise EOFError("connection closed while writing") from exc
 
+    # --------------------------------------------------------------------- #
+    # readiness
+    # --------------------------------------------------------------------- #
+
     def poll(self, timeout: float | Timeout | None) -> bool:
+        """Return *True* if at least one byte can be read within *timeout*."""
+        if self._buf:  # already have buffered data
+            return True
+
         timeout = Timeout(timeout)
-        timeout = timeout.timeleft()
-        if timeout is not None and timeout <= 0:
-            return False
+        while True:
+            slice_len = timeout.timeleft()
+            if slice_len is not None and slice_len <= 0:
+                return False
 
-        msg = self.ws_recv(timeout)
-        if not msg:
-            return False
+            try:
+                msg = self._recv(slice_len)
+            except Exception:
+                # websocket client may raise its own timeout exception
+                if timeout.expired():
+                    return False
+                raise
 
-        self._buf.extend(msg)
-        return True
+            if msg:
+                self._buf += msg
+                return True
+
+            if timeout.expired():
+                return False
